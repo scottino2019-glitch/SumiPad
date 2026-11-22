@@ -361,15 +361,20 @@ export function speakJapanese(
     activeAudioEl.pause();
     activeAudioEl.currentTime = 0;
   }
+  if ('speechSynthesis' in window && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      // ignore
+    }
+  }
 
   const hasSpeechApi = 'speechSynthesis' in window;
-  const hasNativeJpVoice = Boolean(getJapaneseVoice());
   const preferSpeechSync =
-    hasSpeechApi &&
-    (hasNativeJpVoice || ttsEndpointAvailable === false || !navigator.onLine);
+    hasSpeechApi && (ttsEndpointAvailable === false || !navigator.onLine);
 
-  // Execute Web Speech synchronously inside the click gesture when a native voice
-  // is available or the dev /api/tts proxy isn't active (e.g. static build / offline).
+  // Execute Web Speech synchronously inside the click gesture when offline or
+  // when /api/tts is unavailable on the current host.
   if (preferSpeechSync) {
     const started = playWithWebSpeech(
       cleaned,
