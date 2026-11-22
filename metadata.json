@@ -1,0 +1,6 @@
+{
+  "name": "SumiPad — Scrittura Giapponese Interattiva",
+  "description": "App interattiva per imparare a scrivere Hiragana, Katakana, Kanji principali e parole comuni con guide animate tratto per tratto e lista di studio personalizzata.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
