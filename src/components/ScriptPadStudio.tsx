@@ -58,20 +58,20 @@ const QUIZ_PRECISION_PRESETS: Record<
 > = {
   ampia: {
     label: 'Ampia',
-    leniency: 2.1,
-    averageDistanceThreshold: 580,
-    markStrokeCorrectAfterMisses: 4,
+    leniency: 2.8,
+    averageDistanceThreshold: 750,
+    markStrokeCorrectAfterMisses: 3,
   },
   normale: {
     label: 'Normale',
-    leniency: 1.6,
-    averageDistanceThreshold: 450,
+    leniency: 1.35,
+    averageDistanceThreshold: 400,
     markStrokeCorrectAfterMisses: false,
   },
   rigorosa: {
     label: 'Rigorosa',
-    leniency: 1.15,
-    averageDistanceThreshold: 350,
+    leniency: 0.75,
+    averageDistanceThreshold: 250,
     markStrokeCorrectAfterMisses: false,
   },
 };

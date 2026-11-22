@@ -146,58 +146,198 @@ export function splitWritableCharacters(text: string): string[] {
 // Keep persistent references to avoid Chrome Garbage Collection cancelling playback
 let activeAudioEl: HTMLAudioElement | null = null;
 let activeUtterance: SpeechSynthesisUtterance | null = null;
+let activePlaybackToken = 0;
+let ttsEndpointAvailable: boolean | null = null;
+
+function getJapaneseVoice(): SpeechSynthesisVoice | undefined {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    return undefined;
+  }
+  const voices = window.speechSynthesis.getVoices();
+  return (
+    voices.find((v) => v.lang.toLowerCase() === 'ja-jp') ||
+    voices.find((v) => v.lang.toLowerCase().startsWith('ja'))
+  );
+}
+
+if (typeof window !== 'undefined') {
+  if ('speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.addEventListener?.('voiceschanged', () => {
+        window.speechSynthesis.getVoices();
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  // Probe once whether /api/tts actually streams audio (false in static builds / offline)
+  fetch('/api/tts?q=%E3%81%82', {method: 'GET'})
+    .then((res) => {
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      ttsEndpointAvailable = res.ok && ct.includes('audio');
+    })
+    .catch(() => {
+      ttsEndpointAvailable = false;
+    });
+}
 
 function playWithWebSpeech(
   text: string,
+  token: number,
   onStart?: () => void,
   onEnd?: () => void,
-  onError?: (msg: string) => void,
-): void {
+  onFailure?: () => void,
+): boolean {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-    onError?.('Sintesi vocale non supportata su questo browser.');
-    return;
+    return false;
   }
 
   const synth = window.speechSynthesis;
-  const startSpeech = () => {
-    try {
-      if (synth.paused) synth.resume();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'ja-JP';
-      utterance.rate = 0.85;
-      utterance.volume = 1;
-
-      const voices = synth.getVoices();
-      const jpVoice = voices.find((v) => v.lang.toLowerCase().startsWith('ja'));
-      if (jpVoice) {
-        utterance.voice = jpVoice;
-      }
-
-      utterance.onstart = () => onStart?.();
-      utterance.onend = () => {
-        activeUtterance = null;
-        onEnd?.();
-      };
-      utterance.onerror = () => {
-        activeUtterance = null;
-        onEnd?.();
-        onError?.('Audio giapponese non disponibile offline su questo dispositivo.');
-      };
-
-      activeUtterance = utterance;
-      synth.speak(utterance);
-    } catch {
-      onEnd?.();
-      onError?.('Impossibile riprodurre l’audio.');
+  try {
+    if (synth.speaking || synth.pending) {
+      synth.cancel();
     }
+    if (synth.paused) {
+      synth.resume();
+    }
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'ja-JP';
+    utterance.rate = 0.85;
+    utterance.volume = 1;
+
+    const jpVoice = getJapaneseVoice();
+    if (jpVoice) {
+      utterance.voice = jpVoice;
+    }
+
+    let finished = false;
+    const safetyTimer = window.setTimeout(() => {
+      if (!finished && activePlaybackToken === token) {
+        finished = true;
+        activeUtterance = null;
+        onEnd?.();
+      }
+    }, 6000);
+
+    utterance.onstart = () => {
+      if (activePlaybackToken === token) {
+        onStart?.();
+      }
+    };
+
+    utterance.onend = () => {
+      window.clearTimeout(safetyTimer);
+      if (finished) return;
+      finished = true;
+      if (activePlaybackToken === token) {
+        activeUtterance = null;
+        onEnd?.();
+      }
+    };
+
+    utterance.onerror = (event) => {
+      window.clearTimeout(safetyTimer);
+      if (finished) return;
+      finished = true;
+      if (activePlaybackToken !== token) return;
+      activeUtterance = null;
+      const errCode = (event as SpeechSynthesisErrorEvent | undefined)?.error;
+      if (errCode === 'canceled' || errCode === 'interrupted') {
+        onEnd?.();
+        return;
+      }
+      onFailure?.();
+    };
+
+    activeUtterance = utterance;
+    onStart?.();
+    synth.speak(utterance);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function playWithHtmlAudio(
+  text: string,
+  token: number,
+  callbacks: {
+    onStart?: () => void;
+    onEnd?: () => void;
+    onError?: (msg: string) => void;
+  } | undefined,
+  allowWebSpeechFallback: boolean,
+): void {
+  const audio = activeAudioEl || new Audio();
+  activeAudioEl = audio;
+  audio.volume = 1;
+
+  const tryDirect = ttsEndpointAvailable === false;
+  let stage: 'proxy' | 'direct' | 'done' = tryDirect ? 'direct' : 'proxy';
+
+  const failFinal = () => {
+    if (activePlaybackToken !== token) return;
+    stage = 'done';
+    callbacks?.onEnd?.();
+    if (allowWebSpeechFallback) {
+      const started = playWithWebSpeech(
+        text,
+        token,
+        callbacks?.onStart,
+        callbacks?.onEnd,
+        () => {
+          callbacks?.onEnd?.();
+          callbacks?.onError?.('Audio giapponese non disponibile su questo dispositivo.');
+        },
+      );
+      if (started) return;
+    }
+    callbacks?.onError?.('Audio giapponese non disponibile su questo dispositivo.');
   };
 
-  if (synth.speaking || synth.pending) {
-    synth.cancel();
-    setTimeout(startSpeech, 60);
+  const handleFailure = () => {
+    if (activePlaybackToken !== token || stage === 'done') return;
+    if (stage === 'proxy') {
+      ttsEndpointAvailable = false;
+      stage = 'direct';
+      audio.setAttribute('referrerpolicy', 'no-referrer');
+      audio.src = `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
+        text,
+      )}&tl=ja&client=tw-ob`;
+      audio.play().catch(handleFailure);
+      return;
+    }
+    failFinal();
+  };
+
+  audio.onplaying = () => {
+    if (activePlaybackToken === token) {
+      callbacks?.onStart?.();
+    }
+  };
+  audio.onended = () => {
+    if (activePlaybackToken === token) {
+      stage = 'done';
+      callbacks?.onEnd?.();
+    }
+  };
+  audio.onerror = handleFailure;
+
+  if (stage === 'proxy') {
+    audio.removeAttribute('referrerpolicy');
+    audio.src = `/api/tts?q=${encodeURIComponent(text)}`;
   } else {
-    startSpeech();
+    audio.setAttribute('referrerpolicy', 'no-referrer');
+    audio.src = `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
+      text,
+    )}&tl=ja&client=tw-ob`;
   }
+
+  callbacks?.onStart?.();
+  audio.play().catch(handleFailure);
 }
 
 export function speakJapanese(
@@ -211,53 +351,38 @@ export function speakJapanese(
   const cleaned = text.trim();
   if (!cleaned || typeof window === 'undefined') return;
 
+  const token = ++activePlaybackToken;
+
   // Stop previous audio cleanly
   if (activeAudioEl) {
+    activeAudioEl.onended = null;
+    activeAudioEl.onerror = null;
+    activeAudioEl.onplaying = null;
     activeAudioEl.pause();
     activeAudioEl.currentTime = 0;
   }
-  if ('speechSynthesis' in window && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) {
-    window.speechSynthesis.cancel();
+
+  const hasSpeechApi = 'speechSynthesis' in window;
+  const hasNativeJpVoice = Boolean(getJapaneseVoice());
+  const preferSpeechSync =
+    hasSpeechApi &&
+    (hasNativeJpVoice || ttsEndpointAvailable === false || !navigator.onLine);
+
+  // Execute Web Speech synchronously inside the click gesture when a native voice
+  // is available or the dev /api/tts proxy isn't active (e.g. static build / offline).
+  if (preferSpeechSync) {
+    const started = playWithWebSpeech(
+      cleaned,
+      token,
+      callbacks?.onStart,
+      callbacks?.onEnd,
+      () => {
+        if (activePlaybackToken !== token) return;
+        playWithHtmlAudio(cleaned, token, callbacks, false);
+      },
+    );
+    if (started) return;
   }
 
-  const audio = activeAudioEl || new Audio();
-  activeAudioEl = audio;
-  audio.volume = 1;
-
-  let triedDirect = false;
-
-  const handleEnded = () => {
-    callbacks?.onEnd?.();
-  };
-
-  const handleError = () => {
-    if (!triedDirect) {
-      triedDirect = true;
-      // Fallback 1: direct Google TTS without Referer header (for static deployments)
-      audio.setAttribute('referrerpolicy', 'no-referrer');
-      audio.src = `https://translate.googleapis.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
-        cleaned,
-      )}&tl=ja&client=tw-ob`;
-      audio.play().catch(() => {
-        // Fallback 2: native Web Speech API
-        playWithWebSpeech(cleaned, callbacks?.onStart, callbacks?.onEnd, callbacks?.onError);
-      });
-      return;
-    }
-
-    // Fallback 2: native Web Speech API
-    playWithWebSpeech(cleaned, callbacks?.onStart, callbacks?.onEnd, callbacks?.onError);
-  };
-
-  audio.onplaying = () => callbacks?.onStart?.();
-  audio.onended = handleEnded;
-  audio.onerror = handleError;
-
-  // Primary: local same-origin /api/tts MP3 stream (cached by PWA Workbox for offline reuse)
-  audio.removeAttribute('referrerpolicy');
-  audio.src = `/api/tts?q=${encodeURIComponent(cleaned)}`;
-  callbacks?.onStart?.();
-  audio.play().catch(() => {
-    handleError();
-  });
+  playWithHtmlAudio(cleaned, token, callbacks, hasSpeechApi);
 }

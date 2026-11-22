@@ -162,17 +162,7 @@ export default defineConfig(() => {
             },
             {
               urlPattern: /\/api\/tts\?.*$/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'japanese-tts-audio',
-                expiration: {
-                  maxEntries: 500,
-                  maxAgeSeconds: 60 * 60 * 24 * 90,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
+              handler: 'NetworkOnly',
             },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
