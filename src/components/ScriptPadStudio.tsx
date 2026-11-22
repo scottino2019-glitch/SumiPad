@@ -45,6 +45,37 @@ interface FreehandStroke {
   points: Array<{x: number; y: number}>;
 }
 
+type QuizPrecision = 'ampia' | 'normale' | 'rigorosa';
+
+const QUIZ_PRECISION_PRESETS: Record<
+  QuizPrecision,
+  {
+    label: string;
+    leniency: number;
+    averageDistanceThreshold: number;
+    markStrokeCorrectAfterMisses: number | false;
+  }
+> = {
+  ampia: {
+    label: 'Ampia',
+    leniency: 2.1,
+    averageDistanceThreshold: 580,
+    markStrokeCorrectAfterMisses: 4,
+  },
+  normale: {
+    label: 'Normale',
+    leniency: 1.6,
+    averageDistanceThreshold: 450,
+    markStrokeCorrectAfterMisses: false,
+  },
+  rigorosa: {
+    label: 'Rigorosa',
+    leniency: 1.15,
+    averageDistanceThreshold: 350,
+    markStrokeCorrectAfterMisses: false,
+  },
+};
+
 const PAD_SIZE = 340;
 const PAD_PADDING = 24;
 const THUMB_SIZE = 74;
@@ -76,6 +107,7 @@ export function ScriptPadStudio({
   const [audioError, setAudioError] = useState<string | null>(null);
 
   // Quiz state
+  const [quizPrecision, setQuizPrecision] = useState<QuizPrecision>('ampia');
   const [quizStrokeNum, setQuizStrokeNum] = useState(0);
   const [quizMistakes, setQuizMistakes] = useState(0);
   const [quizFeedback, setQuizFeedback] = useState<string>(
@@ -132,13 +164,17 @@ export function ScriptPadStudio({
 
   const startQuizSession = useCallback(
     (writer: HanziWriter) => {
+      const preset = QUIZ_PRECISION_PRESETS[quizPrecision];
+      setActiveStrokeIndex(0);
       setQuizStrokeNum(0);
       setQuizMistakes(0);
       setQuizCompleted(false);
       setQuizFeedback('Traccia il tratto 1 rispettando direzione e ordine.');
 
       writer.quiz({
-        leniency: 1.15,
+        leniency: preset.leniency,
+        averageDistanceThreshold: preset.averageDistanceThreshold,
+        markStrokeCorrectAfterMisses: preset.markStrokeCorrectAfterMisses,
         showHintAfterMisses: 2,
         highlightOnComplete: true,
         onCorrectStroke: (data) => {
@@ -173,7 +209,7 @@ export function ScriptPadStudio({
         },
       });
     },
-    [onCharMastered],
+    [onCharMastered, quizPrecision],
   );
 
   useEffect(() => {
@@ -648,7 +684,7 @@ export function ScriptPadStudio({
             <div
               ref={writerContainerRef}
               className={`absolute inset-0 ${
-                mode === 'quiz' ? 'cursor-crosshair touch-none' : ''
+                mode === 'quiz' ? 'cursor-crosshair touch-none [&>svg]:touch-none' : ''
               } ${mode === 'freehand' ? 'hidden' : 'block'}`}
             />
 
@@ -835,14 +871,43 @@ export function ScriptPadStudio({
               </div>
 
               {mode === 'quiz' && (
-                <button
-                  type="button"
-                  onClick={handleRestartQuiz}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#131B2E] border border-slate-700 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Ricomincia Quiz</span>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={handleRestartQuiz}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#131B2E] border border-slate-700 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Ricomincia Quiz</span>
+                  </button>
+
+                  <div
+                    className="inline-flex items-center gap-1 p-1 bg-[#0B1120] border border-slate-800 rounded-lg"
+                    role="group"
+                    aria-label="Tolleranza riconoscimento tratto"
+                  >
+                    <span className="px-2 text-[11px] font-medium text-slate-400 whitespace-nowrap">
+                      Tolleranza:
+                    </span>
+                    {(Object.keys(QUIZ_PRECISION_PRESETS) as QuizPrecision[]).map((key) => {
+                      const active = quizPrecision === key;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setQuizPrecision(key)}
+                          className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                            active
+                              ? `${theme.accentBg} text-white`
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {QUIZ_PRECISION_PRESETS[key].label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </div>
 

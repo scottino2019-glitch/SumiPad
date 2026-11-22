@@ -12,6 +12,68 @@ export function charToHexFile(char: string): string {
   return `${cp.toString(16).toLowerCase()}.json`;
 }
 
+function samePoint(a: number[] | undefined, b: number[] | undefined): boolean {
+  return Boolean(a && b && a[0] === b[0] && a[1] === b[1]);
+}
+
+function hasOutOfBoundsMedianPoint(median: number[][]): boolean {
+  return median.some(([x, y]) => x < -50 || x > 1074 || y < -150 || y > 1000);
+}
+
+/**
+ * Merges duplicated/mirrored split-loop stroke entries present in
+ * @k1low/hanzi-writer-data-jp (e.g. あ, お, す, な, ぬ, ね, の, は, ま, み, む, め, よ, る).
+ * Those entries split one continuous looped stroke into two SVG paths while leaving
+ * the full median on the first entry and a mirrored/off-canvas median on the second.
+ */
+function sanitizeCharacterStrokeData(data: CharacterStrokeData): CharacterStrokeData {
+  const strokes: string[] = [];
+  const medians: number[][][] = [];
+  const indexMap: number[] = [];
+
+  for (let i = 0; i < data.strokes.length; i++) {
+    const strokePath = data.strokes[i];
+    const median = data.medians[i];
+    const prevMedian = medians[medians.length - 1];
+
+    const sharesTail =
+      Boolean(prevMedian && median) &&
+      prevMedian.length >= 3 &&
+      median.length >= 3 &&
+      samePoint(prevMedian[prevMedian.length - 1], median[median.length - 1]) &&
+      samePoint(prevMedian[prevMedian.length - 2], median[median.length - 2]);
+
+    const isSplitLoopArtifact =
+      sharesTail &&
+      (prevMedian.length === median.length || hasOutOfBoundsMedianPoint(median));
+
+    if (isSplitLoopArtifact && strokes.length > 0) {
+      strokes[strokes.length - 1] = `${strokes[strokes.length - 1]} ${strokePath}`;
+      indexMap.push(strokes.length - 1);
+    } else {
+      strokes.push(strokePath);
+      medians.push(median);
+      indexMap.push(strokes.length - 1);
+    }
+  }
+
+  const radStrokes = data.radStrokes
+    ? Array.from(
+        new Set(
+          data.radStrokes
+            .map((idx) => indexMap[idx])
+            .filter((idx): idx is number => typeof idx === 'number'),
+        ),
+      )
+    : undefined;
+
+  return {
+    strokes,
+    medians,
+    ...(radStrokes ? {radStrokes} : {}),
+  };
+}
+
 export async function fetchCharacterStrokeData(char: string): Promise<CharacterStrokeData> {
   const cached = charCache.get(char);
   if (cached) {
@@ -29,7 +91,8 @@ export async function fetchCharacterStrokeData(char: string): Promise<CharacterS
     if (!res.ok) {
       throw new Error(`Dati tratti non disponibili per "${char}"`);
     }
-    const data = (await res.json()) as CharacterStrokeData;
+    const rawData = (await res.json()) as CharacterStrokeData;
+    const data = sanitizeCharacterStrokeData(rawData);
     charCache.set(char, data);
     return data;
   })().finally(() => {
